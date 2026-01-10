@@ -263,6 +263,21 @@ fn handle_start(id: Option<String>, create_args: Vec<String>, verbose: bool) -> 
         eprintln!("Warning: Failed to set bead status to 'in_progress': {}", e);
     }
 
+    // Cleanup worktree
+    if verbose {
+        println!("Cleaning up worktree at {}...", new_worktree_path.display());
+    }
+    let status = Command::new("git")
+        .arg("worktree")
+        .arg("remove")
+        .arg(&new_worktree_path)
+        .status()
+        .context("Failed to execute git worktree remove")?;
+        
+    if !status.success() {
+        eprintln!("Warning: Failed to remove worktree at {}", new_worktree_path.display());
+    }
+
     Ok(())
 }
 
@@ -289,7 +304,7 @@ fn update_bead_status(cwd: &Path, issue_id: &str, status: &str, verbose: bool) -
 
 fn spawn_gemini(path: &Path, issue_id: &str) -> Result<()> {
     let prompt = format!(
-        "You are working on issue {}. Please call 'bd show {}' to get the details of the issue. Your task is to fix this issue, commit the changes, push, and open a PR. You have full permissions.",
+        "You are working on issue {}. Please call 'bd show {}' to get the details of the issue. Your task is to fix this issue, commit the changes, push, and open a PR. When committing, please include a descriptive message and add 'Co-authored-by: Gemini <gemini@google.com>' to the commit message. Stop working immediately after opening the PR.",
         issue_id, issue_id
     );
 
