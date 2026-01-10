@@ -150,11 +150,69 @@ fn handle_start(id: Option<String>, create_args: Vec<String>, verbose: bool) -> 
             .status();
     }
 
-    // "cd" into the directory by spawning a shell
-    println!("Spawning subshell in {}", new_worktree_path.display().to_string().green());
-    spawn_shell(&new_worktree_path)?;
+    // Launch Gemini session
+    println!("Launching Gemini session in {}", new_worktree_path.display().to_string().green());
+    
+    // Update status to hooked
+    if let Err(e) = update_bead_status(&git_root, &issue_id, "hooked", verbose) {
+        eprintln!("Warning: Failed to set bead status to 'hooked': {}", e);
+    }
+
+    spawn_gemini(&new_worktree_path, &issue_id)?;
+
+    // Update status to in_progress
+    if let Err(e) = update_bead_status(&git_root, &issue_id, "in_progress", verbose) {
+        eprintln!("Warning: Failed to set bead status to 'in_progress': {}", e);
+    }
 
     Ok(())
+}
+
+fn update_bead_status(cwd: &Path, issue_id: &str, status: &str, verbose: bool) -> Result<()> {
+    if verbose {
+        println!("Updating bead {} status to '{}'...", issue_id, status);
+    }
+    
+    let output = Command::new("bd")
+        .arg("update")
+        .arg(issue_id)
+        .arg("--status")
+        .arg(status)
+        .current_dir(cwd)
+        .output()
+        .context("Failed to execute 'bd update'")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("bd update failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
+fn spawn_gemini(path: &Path, issue_id: &str) -> Result<()> {
+    let prompt = format!(
+        "You are working on issue {}. Please call 'bd show {}' to get the details of the issue. Your task is to fix this issue, commit the changes, push, and open a PR. You have full permissions. Once you have opened the PR, please exit the session.",
+        issue_id, issue_id
+    );
+
+    let status = Command::new("gemini")
+        .arg("--yolo")
+        .arg("--prompt-interactive")
+        .arg(&prompt)
+        .current_dir(path)
+        .status();
+
+    match status {
+        Ok(_) => Ok(()), // Session finished (success or not, we are done)
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                 println!("{}", "Gemini CLI not found. Falling back to default shell...".yellow());
+                 spawn_shell(path)
+            } else {
+                Err(e).context("Failed to spawn gemini")
+            }
+        }
+    }
 }
 
 fn create_new_bead(args: &[String], cwd: &Path) -> Result<String> {
