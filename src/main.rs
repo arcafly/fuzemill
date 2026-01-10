@@ -115,6 +115,33 @@ fn handle_merge(issue_id: String, verbose: bool) -> Result<()> {
     
     println!("Successfully merged PR for {} and updated main.", issue_id);
 
+    // Close the bead
+    if let Err(e) = close_bead(&git_root, &issue_id, verbose) {
+        eprintln!("Warning: Failed to close bead: {}", e);
+    }
+
+    Ok(())
+}
+
+fn close_bead(cwd: &Path, issue_id: &str, verbose: bool) -> Result<()> {
+    if verbose {
+        println!("Closing issue {}...", issue_id);
+    }
+    
+    // We assume 'bd close <id>' is the command.
+    // If not, we might need 'bd update <id> --status closed'
+    // Trying 'bd close' first.
+    let output = Command::new("bd")
+        .arg("close")
+        .arg(issue_id)
+        .current_dir(cwd)
+        .output()
+        .context("Failed to execute 'bd close'")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("bd close failed: {}", stderr.trim());
+    }
     Ok(())
 }
 
