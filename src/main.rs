@@ -26,6 +26,10 @@ enum Commands {
         #[arg(short, long)]
         id: Option<String>,
 
+        /// The model to use with Gemini
+        #[arg(short, long)]
+        model: Option<String>,
+
         /// Arguments to pass to 'bd create' if no ID is provided
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         create_args: Vec<String>,
@@ -46,7 +50,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Start { id, create_args }) => handle_start(id, create_args, cli.verbose),
+        Some(Commands::Start { id, model, create_args }) => handle_start(id, model, create_args, cli.verbose),
         Some(Commands::Unstart { issue_id }) => handle_unstart(issue_id, cli.verbose),
         Some(Commands::Merge { issue_id }) => handle_merge(issue_id, cli.verbose),
         None => handle_scan(cli.verbose),
@@ -173,7 +177,7 @@ fn handle_scan(verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn handle_start(id: Option<String>, create_args: Vec<String>, verbose: bool) -> Result<()> {
+fn handle_start(id: Option<String>, model: Option<String>, create_args: Vec<String>, verbose: bool) -> Result<()> {
     let current_dir = env::current_dir().context("Failed to get current directory")?;
     let git_root = find_git_root(&current_dir).context("Not in a git repository")?;
 
@@ -256,7 +260,7 @@ fn handle_start(id: Option<String>, create_args: Vec<String>, verbose: bool) -> 
         eprintln!("Warning: Failed to set bead status to 'hooked': {}", e);
     }
 
-    spawn_gemini(&new_worktree_path, &issue_id)?;
+    spawn_gemini(&new_worktree_path, &issue_id, model)?;
 
     // Update status to in_progress
     if let Err(e) = update_bead_status(&git_root, &issue_id, "in_progress", verbose) {
@@ -302,17 +306,23 @@ fn update_bead_status(cwd: &Path, issue_id: &str, status: &str, verbose: bool) -
     Ok(())
 }
 
-fn spawn_gemini(path: &Path, issue_id: &str) -> Result<()> {
+fn spawn_gemini(path: &Path, issue_id: &str, model: Option<String>) -> Result<()> {
     let prompt = format!(
         "You are working on issue {}. Please call 'bd show {}' to get the details of the issue. Your task is to fix this issue, commit the changes, push, and open a PR. When committing, please include a descriptive message and add 'Co-authored-by: Gemini <gemini@google.com>' to the commit message. Stop working immediately after opening the PR.",
         issue_id, issue_id
     );
 
-    let status = Command::new("gemini")
-        .arg("--yolo")
-        .arg(&prompt)
-        .current_dir(path)
-        .status();
+    let mut cmd = Command::new("gemini");
+    cmd.arg("--yolo");
+    
+    if let Some(m) = model {
+        cmd.arg("--model").arg(m);
+    }
+    
+    cmd.arg(&prompt)
+        .current_dir(path);
+
+    let status = cmd.status();
 
     match status {
         Ok(_) => Ok(()), // Session finished (success or not, we are done)
