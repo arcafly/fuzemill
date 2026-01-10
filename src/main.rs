@@ -73,6 +73,10 @@ fn handle_start(issue_id: String, verbose: bool) -> Result<()> {
     let current_dir = env::current_dir().context("Failed to get current directory")?;
     let git_root = find_git_root(&current_dir).context("Not in a git repository")?;
     
+    // Check if issue exists in beads
+    check_bead_exists(&issue_id, &git_root, verbose)?;
+
+    // Determine the main repo name
     let (main_repo_path, is_worktree) = get_git_common_dir(&git_root)?;
     
     // Determine the main repo name to use for prefixing
@@ -289,4 +293,41 @@ fn find_git_root(start_path: &Path) -> Option<PathBuf> {
             None => return None,
         }
     }
+}
+
+fn check_bead_exists(issue_id: &str, cwd: &Path, verbose: bool) -> Result<()> {
+    if verbose {
+        println!("Verifying issue existence for '{}'...", issue_id);
+    }
+
+    let status = Command::new("bd")
+        .arg("show")
+        .arg(issue_id)
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match status {
+        Ok(exit_status) => {
+            if !exit_status.success() {
+                bail!("Issue '{}' not found in beads (or beads database missing).", issue_id);
+            }
+        }
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                // bd not installed? 
+                // We might want to warn but proceed, or fail?
+                // The user explicitly asked for this check, so probably fail or warn.
+                // "if there isn't, exit" implies strict check.
+                // But if bd is missing, we can't check.
+                // Let's assume strict requirement.
+                bail!("'bd' command not found. Please install beads to verify issue ID.");
+            } else {
+                return Err(e).context("Failed to execute 'bd' command");
+            }
+        }
+    }
+    
+    Ok(())
 }
