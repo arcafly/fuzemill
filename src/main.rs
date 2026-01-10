@@ -35,6 +35,11 @@ enum Commands {
         /// The issue ID
         issue_id: String,
     },
+    /// Merge the PR associated with an issue and pull main
+    Merge {
+        /// The issue ID
+        issue_id: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -43,8 +48,53 @@ fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Start { id, create_args }) => handle_start(id, create_args, cli.verbose),
         Some(Commands::Unstart { issue_id }) => handle_unstart(issue_id, cli.verbose),
+        Some(Commands::Merge { issue_id }) => handle_merge(issue_id, cli.verbose),
         None => handle_scan(cli.verbose),
     }
+}
+
+fn handle_merge(issue_id: String, verbose: bool) -> Result<()> {
+    let current_dir = env::current_dir().context("Failed to get current directory")?;
+    let git_root = find_git_root(&current_dir).context("Not in a git repository")?;
+    let (_, is_worktree) = get_git_common_dir(&git_root)?;
+
+    if is_worktree {
+        bail!("'merge' must be run from the main repository, not a worktree.");
+    }
+
+    if verbose {
+        println!("Merging PR for branch '{}'...", issue_id);
+    }
+
+    let status = Command::new("gh")
+        .arg("pr")
+        .arg("merge")
+        .arg(&issue_id)
+        .arg("--merge")
+        .arg("--delete-branch")
+        .status()
+        .context("Failed to execute 'gh pr merge'")?;
+
+    if !status.success() {
+        bail!("Failed to merge PR. Ensure 'gh' is installed and a PR exists for branch '{}'.", issue_id);
+    }
+
+    if verbose {
+        println!("Pulling latest changes to main...");
+    }
+
+    let status = Command::new("git")
+        .arg("pull")
+        .status()
+        .context("Failed to execute 'git pull'")?;
+
+    if !status.success() {
+        bail!("Failed to pull to main.");
+    }
+    
+    println!("Successfully merged PR for {} and updated main.", issue_id);
+
+    Ok(())
 }
 
 fn handle_scan(verbose: bool) -> Result<()> {
