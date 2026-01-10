@@ -300,32 +300,25 @@ fn check_bead_exists(issue_id: &str, cwd: &Path, verbose: bool) -> Result<()> {
         println!("Verifying issue existence for '{}'...", issue_id);
     }
 
-    let status = Command::new("bd")
+    let output = Command::new("bd")
         .arg("show")
         .arg(issue_id)
         .current_dir(cwd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+        .output()
+        .context("Failed to execute 'bd' command. Is beads installed?")?;
 
-    match status {
-        Ok(exit_status) => {
-            if !exit_status.success() {
-                bail!("Issue '{}' not found in beads (or beads database missing).", issue_id);
-            }
-        }
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                // bd not installed? 
-                // We might want to warn but proceed, or fail?
-                // The user explicitly asked for this check, so probably fail or warn.
-                // "if there isn't, exit" implies strict check.
-                // But if bd is missing, we can't check.
-                // Let's assume strict requirement.
-                bail!("'bd' command not found. Please install beads to verify issue ID.");
-            } else {
-                return Err(e).context("Failed to execute 'bd' command");
-            }
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("no beads database found") {
+             bail!("No beads database found. Run 'bd init' to initialize.");
+        } else {
+             // It's likely an issue not found error, or some other bd error.
+             // We can print the stderr if verbose, or just assume issue not found.
+             // Given the request, we treat it as issue not found.
+             if verbose {
+                 eprintln!("bd error: {}", stderr.trim());
+             }
+             bail!("Issue '{}' not found.", issue_id);
         }
     }
     
