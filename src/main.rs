@@ -62,6 +62,27 @@ fn handle_merge(issue_id: String, verbose: bool) -> Result<()> {
         bail!("'merge' must be run from the main repository, not a worktree.");
     }
 
+    // Try to cleanup the worktree first so the branch is not locked
+    let repo_dirname = git_root.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+    let worktree_dir_name = format!("{}-{}", repo_dirname, issue_id);
+    let worktree_path = git_root.parent().unwrap_or(Path::new(".")).join(&worktree_dir_name);
+
+    if worktree_path.exists() {
+        if verbose {
+            println!("Removing worktree at {} to release branch lock...", worktree_path.display());
+        }
+        let status = Command::new("git")
+            .arg("worktree")
+            .arg("remove")
+            .arg(&worktree_path)
+            .status()
+            .context("Failed to execute git worktree remove")?;
+
+        if !status.success() {
+            eprintln!("Warning: Failed to remove worktree. 'gh pr merge' might fail to delete local branch.");
+        }
+    }
+
     if verbose {
         println!("Merging PR for branch '{}'...", issue_id);
     }
