@@ -19,10 +19,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start working on an issue (creates worktree and branch)
+    /// Start working on an issue (creates worktree and branch).
+    /// If no ID is provided, passes arguments to 'bd create' to generate a new issue.
     Start {
         /// The issue ID (used for branch name)
-        issue_id: String,
+        #[arg(short, long)]
+        id: Option<String>,
+
+        /// Arguments to pass to 'bd create' if no ID is provided
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        create_args: Vec<String>,
     },
     /// Stop working on an issue (removes worktree and branch)
     Unstart {
@@ -35,7 +41,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Start { issue_id }) => handle_start(issue_id, cli.verbose),
+        Some(Commands::Start { id, create_args }) => handle_start(id, create_args, cli.verbose),
         Some(Commands::Unstart { issue_id }) => handle_unstart(issue_id, cli.verbose),
         None => handle_scan(cli.verbose),
     }
@@ -69,17 +75,25 @@ fn handle_scan(verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn handle_start(issue_id: String, verbose: bool) -> Result<()> {
+fn handle_start(id: Option<String>, create_args: Vec<String>, verbose: bool) -> Result<()> {
     let current_dir = env::current_dir().context("Failed to get current directory")?;
     let git_root = find_git_root(&current_dir).context("Not in a git repository")?;
-    
-    // Check if issue exists in beads
-    check_bead_exists(&issue_id, &git_root, verbose)?;
 
-    // Determine the main repo name
-    let (main_repo_path, is_worktree) = get_git_common_dir(&git_root)?;
+    let issue_id = if let Some(provided_id) = id {
+        check_bead_exists(&provided_id, &git_root, verbose)?;
+        provided_id
+    } else if !create_args.is_empty() {
+        if verbose {
+            println!("Creating new issue via 'bd create'...");
+        }
+        create_new_bead(&create_args, &git_root)?
+    } else {
+        bail!("Please provide an issue ID via --id or arguments to create a new issue.");
+    };
     
     // Determine the main repo name to use for prefixing
+    let (main_repo_path, is_worktree) = get_git_common_dir(&git_root)?;
+    
     let repo_path_for_name = if is_worktree {
         &main_repo_path
     } else {
@@ -141,6 +155,32 @@ fn handle_start(issue_id: String, verbose: bool) -> Result<()> {
     spawn_shell(&new_worktree_path)?;
 
     Ok(())
+}
+
+fn create_new_bead(args: &[String], cwd: &Path) -> Result<String> {
+    let output = Command::new("bd")
+        .arg("create")
+        .args(args)
+        .arg("--silent")
+        .current_dir(cwd)
+        .output()
+        .context("Failed to execute 'bd create'")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("{}", stderr);
+        bail!("Failed to create issue.");
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let issue_id = stdout.trim().to_string();
+    
+    if issue_id.is_empty() {
+        bail!("'bd create' returned empty issue ID.");
+    }
+    
+    println!("Created issue: {}", issue_id.green());
+    Ok(issue_id)
 }
 
 fn handle_unstart(issue_id: String, verbose: bool) -> Result<()> {
