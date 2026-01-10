@@ -191,13 +191,12 @@ fn update_bead_status(cwd: &Path, issue_id: &str, status: &str, verbose: bool) -
 
 fn spawn_gemini(path: &Path, issue_id: &str) -> Result<()> {
     let prompt = format!(
-        "You are working on issue {}. Please call 'bd show {}' to get the details of the issue. Your task is to fix this issue, commit the changes, push, and open a PR. You have full permissions. Once you have opened the PR, please exit the session.",
+        "You are working on issue {}. Please call 'bd show {}' to get the details of the issue. Your task is to fix this issue, commit the changes, push, and open a PR. You have full permissions.",
         issue_id, issue_id
     );
 
     let status = Command::new("gemini")
         .arg("--yolo")
-        .arg("--prompt-interactive")
         .arg(&prompt)
         .current_dir(path)
         .status();
