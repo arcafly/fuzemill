@@ -80,7 +80,7 @@ To test the CLI in a different directory without installing it, build the projec
 2. Navigate to any other directory and run the binary:
    ```bash
    cd /some/other/repo
-   /Users/jbtobar/dev/@arcafly/turkeyham/target/debug/fuzemill
+   /Users/jbtobar/dev/@arcafly/fuzemill/target/debug/fuzemill
    ```
 
 Alternatively, you can install it globally for the current user:
