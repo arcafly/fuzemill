@@ -121,6 +121,17 @@ fn handle_start(issue_id: String, verbose: bool) -> Result<()> {
         }
     }
 
+    // Run direnv allow if .envrc exists
+    if new_worktree_path.join(".envrc").exists() {
+        if verbose {
+            println!("Detected .envrc, running 'direnv allow'...");
+        }
+        let _ = Command::new("direnv")
+            .arg("allow")
+            .current_dir(&new_worktree_path)
+            .status();
+    }
+
     // "cd" into the directory by spawning a shell
     println!("Spawning subshell in {}", new_worktree_path.display().to_string().green());
     spawn_shell(&new_worktree_path)?;
