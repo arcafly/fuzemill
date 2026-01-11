@@ -26,9 +26,13 @@ enum Commands {
         #[arg(short, long)]
         id: Option<String>,
 
-        /// The model to use with Gemini
+        /// The model to use with the AI agent
         #[arg(short, long)]
         model: Option<String>,
+
+        /// AI agent to use: "claude" or "gemini"
+        #[arg(short, long, default_value = "claude")]
+        agent: String,
 
         /// Arguments to pass to 'bd create' if no ID is provided
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -44,17 +48,50 @@ enum Commands {
         /// The issue ID
         issue_id: String,
     },
+    /// Signal that work is done (closes the Gemini session)
+    Done,
+    
+    /// Test creating a tmux session with Gemini (dry-run without git/beads)
+    #[command(hide = true)]
+    TestTmux,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Start { id, model, create_args }) => handle_start(id, model, create_args, cli.verbose),
+        Some(Commands::Start { id, model, agent, create_args }) => handle_start(id, model, agent, create_args, cli.verbose),
         Some(Commands::Unstart { issue_id }) => handle_unstart(issue_id, cli.verbose),
         Some(Commands::Merge { issue_id }) => handle_merge(issue_id, cli.verbose),
+        Some(Commands::Done) => handle_done(cli.verbose),
+        Some(Commands::TestTmux) => handle_test_tmux(cli.verbose),
         None => handle_scan(cli.verbose),
     }
+}
+
+fn handle_test_tmux(verbose: bool) -> Result<()> {
+    let current_dir = env::current_dir()?;
+    let session_name = "fuzemill-test";
+    println!("Starting test tmux session '{}'...", session_name);
+    
+    spawn_gemini_tmux(&current_dir, "test-issue", None, session_name, verbose)
+}
+
+fn handle_done(verbose: bool) -> Result<()> {
+    // Check if we are inside a tmux session
+    if let Ok(_) = env::var("TMUX") {
+        if verbose {
+            println!("Detected tmux session. Killing session...");
+        }
+        // We kill the session. This will detach the client and close the window.
+        Command::new("tmux")
+            .arg("kill-session")
+            .status()
+            .context("Failed to kill tmux session")?;
+    } else {
+        println!("Not inside a tmux session. 'fuzemill done' currently only works within a fuzemill-started tmux session.");
+    }
+    Ok(())
 }
 
 fn handle_merge(issue_id: String, verbose: bool) -> Result<()> {
@@ -177,7 +214,7 @@ fn handle_scan(verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn handle_start(id: Option<String>, model: Option<String>, create_args: Vec<String>, verbose: bool) -> Result<()> {
+fn handle_start(id: Option<String>, model: Option<String>, agent: String, create_args: Vec<String>, verbose: bool) -> Result<()> {
     let current_dir = env::current_dir().context("Failed to get current directory")?;
     let git_root = find_git_root(&current_dir).context("Not in a git repository")?;
 
@@ -260,7 +297,12 @@ fn handle_start(id: Option<String>, model: Option<String>, create_args: Vec<Stri
         eprintln!("Warning: Failed to set bead status to 'hooked': {}", e);
     }
 
-    spawn_gemini(&new_worktree_path, &issue_id, model)?;
+    let session_name = format!("fuzemill-{}", issue_id);
+    match agent.as_str() {
+        "gemini" => spawn_gemini_tmux(&new_worktree_path, &issue_id, model, &session_name, verbose)?,
+        "claude" => spawn_claude_tmux(&new_worktree_path, &issue_id, model, &session_name, verbose)?,
+        _ => bail!("Unknown agent '{}'. Use 'claude' or 'gemini'.", agent),
+    }
 
     // Update status to in_progress
     if let Err(e) = update_bead_status(&git_root, &issue_id, "in_progress", verbose) {
@@ -306,35 +348,110 @@ fn update_bead_status(cwd: &Path, issue_id: &str, status: &str, verbose: bool) -
     Ok(())
 }
 
-fn spawn_gemini(path: &Path, issue_id: &str, model: Option<String>) -> Result<()> {
+fn spawn_gemini_tmux(path: &Path, issue_id: &str, model: Option<String>, session_name: &str, verbose: bool) -> Result<()> {
+    let current_exe = env::current_exe().unwrap_or_else(|_| PathBuf::from("fuzemill"));
+    let done_cmd = format!("{} done", current_exe.display());
+
     let prompt = format!(
-        "You are working on issue {}. Please call 'bd show {}' to get the details of the issue. Your task is to fix this issue, commit the changes, push, and open a PR. When committing, please include a descriptive message and add 'Co-authored-by: Gemini <gemini@google.com>' to the commit message. Stop working immediately after opening the PR.",
-        issue_id, issue_id
+        "You are working on issue {}. Please call 'bd show {}' to get the details of the issue. Your task is to fix this issue, commit the changes, push, and open a PR. When committing, please include a descriptive message and add 'Co-authored-by: Gemini <gemini@google.com>' to the commit message. When you are finished, run '{}' to close the session.",
+        issue_id, issue_id, done_cmd
     );
 
-    let mut cmd = Command::new("gemini");
-    cmd.arg("--yolo");
-    
+    // Construct the command to run inside tmux
+    let mut gemini_cmd = String::from("gemini --yolo --prompt-interactive");
     if let Some(m) = model {
-        cmd.arg("--model").arg(m);
+        gemini_cmd.push_str(&format!(" --model {}", m));
     }
+    // We need to quote the prompt properly for the shell inside tmux
+    // A simple escaping for single quotes might be enough if we wrap prompt in single quotes
+    let escaped_prompt = prompt.replace("'", "'\\''");
+    gemini_cmd.push_str(&format!(" '{}'", escaped_prompt));
+
+    if verbose {
+        println!("Creating tmux session '{}'...", session_name);
+    }
+
+    // tmux new-session -d -s <name> -c <path> <command>
+    let status = Command::new("tmux")
+        .arg("new-session")
+        .arg("-d")
+        .arg("-s")
+        .arg(session_name)
+        .arg("-c")
+        .arg(path)
+        .arg(&gemini_cmd)
+        .status()
+        .context("Failed to create tmux session")?;
+
+    if !status.success() {
+        bail!("Failed to create tmux session. Is tmux installed?");
+    }
+
+    if verbose {
+        println!("Attaching to tmux session...");
+    }
+
+    // tmux attach -t <name>
+    let status = Command::new("tmux")
+        .arg("attach")
+        .arg("-t")
+        .arg(session_name)
+        .status()
+        .context("Failed to attach to tmux session")?;
     
-    cmd.arg(&prompt)
-        .current_dir(path);
+    // If attach fails (e.g. user detaches or session dies), we continue.
+    // The start logic will cleanup after this returns.
 
-    let status = cmd.status();
+    Ok(())
+}
 
-    match status {
-        Ok(_) => Ok(()), // Session finished (success or not, we are done)
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                 println!("{}", "Gemini CLI not found. Falling back to default shell...".yellow());
-                 spawn_shell(path)
-            } else {
-                Err(e).context("Failed to spawn gemini")
-            }
-        }
+fn spawn_claude_tmux(path: &Path, issue_id: &str, model: Option<String>, session_name: &str, verbose: bool) -> Result<()> {
+    let current_exe = env::current_exe().unwrap_or_else(|_| PathBuf::from("fuzemill"));
+    let done_cmd = format!("{} done", current_exe.display());
+
+    let prompt = format!(
+        "You are working on issue {}. Please call 'bd show {}' to get the details of the issue. Your task is to fix this issue, commit the changes, push, and open a PR. When committing, please include a descriptive message and add 'Co-authored-by: Claude <noreply@anthropic.com>' to the commit message. When you are finished, run '{}' to close the session.",
+        issue_id, issue_id, done_cmd
+    );
+
+    let mut claude_cmd = String::from("claude --dangerously-skip-permissions");
+    if let Some(m) = model {
+        claude_cmd.push_str(&format!(" --model {}", m));
     }
+    let escaped_prompt = prompt.replace("'", "'\\''");
+    claude_cmd.push_str(&format!(" '{}'", escaped_prompt));
+
+    if verbose {
+        println!("Creating tmux session '{}'...", session_name);
+    }
+
+    let status = Command::new("tmux")
+        .arg("new-session")
+        .arg("-d")
+        .arg("-s")
+        .arg(session_name)
+        .arg("-c")
+        .arg(path)
+        .arg(&claude_cmd)
+        .status()
+        .context("Failed to create tmux session")?;
+
+    if !status.success() {
+        bail!("Failed to create tmux session. Is tmux installed?");
+    }
+
+    if verbose {
+        println!("Attaching to tmux session...");
+    }
+
+    let status = Command::new("tmux")
+        .arg("attach")
+        .arg("-t")
+        .arg(session_name)
+        .status()
+        .context("Failed to attach to tmux session")?;
+
+    Ok(())
 }
 
 fn create_new_bead(args: &[String], cwd: &Path) -> Result<String> {
