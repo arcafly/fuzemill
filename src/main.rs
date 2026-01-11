@@ -392,7 +392,7 @@ fn spawn_gemini_tmux(path: &Path, issue_id: &str, model: Option<String>, session
     }
 
     // tmux attach -t <name>
-    let status = Command::new("tmux")
+    let _status = Command::new("tmux")
         .arg("attach")
         .arg("-t")
         .arg(session_name)
@@ -444,7 +444,7 @@ fn spawn_claude_tmux(path: &Path, issue_id: &str, model: Option<String>, session
         println!("Attaching to tmux session...");
     }
 
-    let status = Command::new("tmux")
+    let _status = Command::new("tmux")
         .arg("attach")
         .arg("-t")
         .arg(session_name)
