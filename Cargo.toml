@@ -7,7 +7,7 @@ description = "A Git workflow automation CLI for issue-driven development with A
 license = "MIT"
 repository = "https://github.com/arcafly/fuzemill"
 readme = "README.md"
-keywords = ["git", "workflow", "ai", "automation", "claude", "gemini"]
+keywords = ["git", "workflow", "ai", "automation", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
