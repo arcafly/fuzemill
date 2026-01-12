@@ -22,7 +22,7 @@ A Git workflow automation CLI that orchestrates issue-driven development session
 ## Features
 
 - Creates isolated Git worktrees per issue for clean development
-- Integrates with Beads (`bd`) for Git-backed issue tracking
+- Integrates with Beads (`bd`) for Git-backed issue tracking, or falls back to GitHub Issues
 - Launches AI coding sessions (Claude or Gemini) in tmux
 - Handles PR merging and cleanup via GitHub CLI
 - Automatic worktree cleanup on session exit
@@ -35,11 +35,23 @@ The following tools must be installed and available in your PATH:
 |------|----------|---------|
 | `git` | Yes | Version control with worktree support |
 | `tmux` | Yes | Terminal multiplexer for AI sessions |
-| `bd` (Beads CLI) | Yes | Git-backed issue tracking |
-| `gh` (GitHub CLI) | Yes | PR operations (merge, delete branch) |
+| `gh` (GitHub CLI) | Yes | PR operations and GitHub Issues fallback |
+| `bd` (Beads CLI) | Optional | Git-backed issue tracking (falls back to GitHub Issues if not installed) |
 | `claude` | For Claude agent | Claude Code CLI |
 | `gemini` | For Gemini agent | Gemini CLI |
 | `direnv` | Optional | Auto-runs `direnv allow` if `.envrc` exists |
+
+### Issue Tracking Backend
+
+Fuzemill automatically detects which issue tracking system to use:
+
+- **If `bd` is installed**: Uses Beads for Git-backed issue tracking with custom statuses
+- **If `bd` is not installed**: Falls back to GitHub Issues via `gh` CLI
+
+When using GitHub Issues:
+- Issue creation uses `gh issue create`
+- Status updates use labels (e.g., `status:hooked`, `status:in_progress`)
+- Issue closing uses `gh issue close`
 
 ### Installing Dependencies
 
@@ -117,7 +129,7 @@ This command must be run from the main repository (not a worktree). It will:
 1. Remove the worktree (if it exists)
 2. Run `gh pr merge --merge --delete-branch`
 3. Pull the latest changes to main
-4. Close the issue via `bd close`
+4. Close the issue (via `bd close` or `gh issue close`)
 
 ### End an AI Session
 
@@ -141,11 +153,11 @@ fuzemill
 ## Workflow Example
 
 ```bash
-# 1. Initialize beads in your project (one-time setup)
+# 1. (Optional) Initialize beads in your project if using bd for issue tracking
 bd init
 
 # 2. Create an issue and start working
-fuzemill start "Add user authentication" --priority high
+fuzemill start "Add user authentication"
 
 # 3. AI session opens in tmux - work with the AI to implement the feature
 #    The AI will commit, push, and open a PR

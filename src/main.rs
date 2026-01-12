@@ -3,7 +3,29 @@ use clap::{Parser, Subcommand};
 use colored::*;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum IssueBackend {
+    Beads,
+    GitHub,
+}
+
+fn detect_issue_backend() -> IssueBackend {
+    let bd_available = Command::new("bd")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if bd_available {
+        IssueBackend::Beads
+    } else {
+        IssueBackend::GitHub
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "fuzemill")]
@@ -58,23 +80,31 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let backend = detect_issue_backend();
+
+    if cli.verbose {
+        match backend {
+            IssueBackend::Beads => println!("Using beads (bd) for issue tracking"),
+            IssueBackend::GitHub => println!("Using GitHub Issues (gh) for issue tracking"),
+        }
+    }
 
     match cli.command {
-        Some(Commands::Start { id, model, agent, create_args }) => handle_start(id, model, agent, create_args, cli.verbose),
+        Some(Commands::Start { id, model, agent, create_args }) => handle_start(id, model, agent, create_args, cli.verbose, backend),
         Some(Commands::Unstart { issue_id }) => handle_unstart(issue_id, cli.verbose),
-        Some(Commands::Merge { issue_id }) => handle_merge(issue_id, cli.verbose),
+        Some(Commands::Merge { issue_id }) => handle_merge(issue_id, cli.verbose, backend),
         Some(Commands::Done) => handle_done(cli.verbose),
-        Some(Commands::TestTmux) => handle_test_tmux(cli.verbose),
+        Some(Commands::TestTmux) => handle_test_tmux(cli.verbose, backend),
         None => handle_scan(cli.verbose),
     }
 }
 
-fn handle_test_tmux(verbose: bool) -> Result<()> {
+fn handle_test_tmux(verbose: bool, backend: IssueBackend) -> Result<()> {
     let current_dir = env::current_dir()?;
     let session_name = "fuzemill-test";
     println!("Starting test tmux session '{}'...", session_name);
-    
-    spawn_gemini_tmux(&current_dir, "test-issue", None, session_name, verbose)
+
+    spawn_gemini_tmux(&current_dir, "test-issue", None, session_name, verbose, backend)
 }
 
 fn handle_done(verbose: bool) -> Result<()> {
@@ -94,7 +124,7 @@ fn handle_done(verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn handle_merge(issue_id: String, verbose: bool) -> Result<()> {
+fn handle_merge(issue_id: String, verbose: bool, backend: IssueBackend) -> Result<()> {
     let current_dir = env::current_dir().context("Failed to get current directory")?;
     let git_root = find_git_root(&current_dir).context("Not in a git repository")?;
     let (_, is_worktree) = get_git_common_dir(&git_root)?;
@@ -153,25 +183,29 @@ fn handle_merge(issue_id: String, verbose: bool) -> Result<()> {
     if !status.success() {
         bail!("Failed to pull to main.");
     }
-    
+
     println!("Successfully merged PR for {} and updated main.", issue_id);
 
-    // Close the bead
-    if let Err(e) = close_bead(&git_root, &issue_id, verbose) {
-        eprintln!("Warning: Failed to close bead: {}", e);
+    // Close the issue
+    if let Err(e) = close_issue(&git_root, &issue_id, verbose, backend) {
+        eprintln!("Warning: Failed to close issue: {}", e);
     }
 
     Ok(())
 }
 
-fn close_bead(cwd: &Path, issue_id: &str, verbose: bool) -> Result<()> {
+fn close_issue(cwd: &Path, issue_id: &str, verbose: bool, backend: IssueBackend) -> Result<()> {
+    match backend {
+        IssueBackend::Beads => close_issue_beads(cwd, issue_id, verbose),
+        IssueBackend::GitHub => close_issue_github(cwd, issue_id, verbose),
+    }
+}
+
+fn close_issue_beads(cwd: &Path, issue_id: &str, verbose: bool) -> Result<()> {
     if verbose {
         println!("Closing issue {}...", issue_id);
     }
-    
-    // We assume 'bd close <id>' is the command.
-    // If not, we might need 'bd update <id> --status closed'
-    // Trying 'bd close' first.
+
     let output = Command::new("bd")
         .arg("close")
         .arg(issue_id)
@@ -182,6 +216,26 @@ fn close_bead(cwd: &Path, issue_id: &str, verbose: bool) -> Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("bd close failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
+fn close_issue_github(cwd: &Path, issue_id: &str, verbose: bool) -> Result<()> {
+    if verbose {
+        println!("Closing GitHub issue #{}...", issue_id);
+    }
+
+    let output = Command::new("gh")
+        .arg("issue")
+        .arg("close")
+        .arg(issue_id)
+        .current_dir(cwd)
+        .output()
+        .context("Failed to execute 'gh issue close'")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("gh issue close failed: {}", stderr.trim());
     }
     Ok(())
 }
@@ -214,25 +268,25 @@ fn handle_scan(verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn handle_start(id: Option<String>, model: Option<String>, agent: String, create_args: Vec<String>, verbose: bool) -> Result<()> {
+fn handle_start(id: Option<String>, model: Option<String>, agent: String, create_args: Vec<String>, verbose: bool, backend: IssueBackend) -> Result<()> {
     let current_dir = env::current_dir().context("Failed to get current directory")?;
     let git_root = find_git_root(&current_dir).context("Not in a git repository")?;
 
     let issue_id = if let Some(provided_id) = id {
-        check_bead_exists(&provided_id, &git_root, verbose)?;
+        check_issue_exists(&provided_id, &git_root, verbose, backend)?;
         provided_id
     } else if !create_args.is_empty() {
         if verbose {
-            println!("Creating new issue via 'bd create'...");
+            println!("Creating new issue...");
         }
-        create_new_bead(&create_args, &git_root)?
+        create_new_issue(&create_args, &git_root, backend)?
     } else {
         bail!("Please provide an issue ID via --id or arguments to create a new issue.");
     };
-    
+
     // Determine the main repo name to use for prefixing
     let (main_repo_path, is_worktree) = get_git_common_dir(&git_root)?;
-    
+
     let repo_path_for_name = if is_worktree {
         &main_repo_path
     } else {
@@ -243,7 +297,7 @@ fn handle_start(id: Option<String>, model: Option<String>, agent: String, create
         .file_name()
         .and_then(|n| n.to_str())
         .context("Invalid repository path")?;
-    
+
     let base_parent = if is_worktree {
          // If we are in a worktree, we probably want the new worktree to be a sibling of the worktree (and main repo)
          // Usually worktrees are siblings.
@@ -289,24 +343,24 @@ fn handle_start(id: Option<String>, model: Option<String>, agent: String, create
             .status();
     }
 
-    // Launch Gemini session
-    println!("Launching Gemini session in {}", new_worktree_path.display().to_string().green());
-    
+    // Launch AI session
+    println!("Launching {} session in {}", agent, new_worktree_path.display().to_string().green());
+
     // Update status to hooked
-    if let Err(e) = update_bead_status(&git_root, &issue_id, "hooked", verbose) {
-        eprintln!("Warning: Failed to set bead status to 'hooked': {}", e);
+    if let Err(e) = update_issue_status(&git_root, &issue_id, "hooked", verbose, backend) {
+        eprintln!("Warning: Failed to set issue status to 'hooked': {}", e);
     }
 
     let session_name = format!("fuzemill-{}", issue_id);
     match agent.as_str() {
-        "gemini" => spawn_gemini_tmux(&new_worktree_path, &issue_id, model, &session_name, verbose)?,
-        "claude" => spawn_claude_tmux(&new_worktree_path, &issue_id, model, &session_name, verbose)?,
+        "gemini" => spawn_gemini_tmux(&new_worktree_path, &issue_id, model, &session_name, verbose, backend)?,
+        "claude" => spawn_claude_tmux(&new_worktree_path, &issue_id, model, &session_name, verbose, backend)?,
         _ => bail!("Unknown agent '{}'. Use 'claude' or 'gemini'.", agent),
     }
 
     // Update status to in_progress
-    if let Err(e) = update_bead_status(&git_root, &issue_id, "in_progress", verbose) {
-        eprintln!("Warning: Failed to set bead status to 'in_progress': {}", e);
+    if let Err(e) = update_issue_status(&git_root, &issue_id, "in_progress", verbose, backend) {
+        eprintln!("Warning: Failed to set issue status to 'in_progress': {}", e);
     }
 
     // Cleanup worktree
@@ -319,7 +373,7 @@ fn handle_start(id: Option<String>, model: Option<String>, agent: String, create
         .arg(&new_worktree_path)
         .status()
         .context("Failed to execute git worktree remove")?;
-        
+
     if !status.success() {
         eprintln!("Warning: Failed to remove worktree at {}", new_worktree_path.display());
     }
@@ -327,11 +381,18 @@ fn handle_start(id: Option<String>, model: Option<String>, agent: String, create
     Ok(())
 }
 
-fn update_bead_status(cwd: &Path, issue_id: &str, status: &str, verbose: bool) -> Result<()> {
+fn update_issue_status(cwd: &Path, issue_id: &str, status: &str, verbose: bool, backend: IssueBackend) -> Result<()> {
+    match backend {
+        IssueBackend::Beads => update_issue_status_beads(cwd, issue_id, status, verbose),
+        IssueBackend::GitHub => update_issue_status_github(cwd, issue_id, status, verbose),
+    }
+}
+
+fn update_issue_status_beads(cwd: &Path, issue_id: &str, status: &str, verbose: bool) -> Result<()> {
     if verbose {
         println!("Updating bead {} status to '{}'...", issue_id, status);
     }
-    
+
     let output = Command::new("bd")
         .arg("update")
         .arg(issue_id)
@@ -348,13 +409,48 @@ fn update_bead_status(cwd: &Path, issue_id: &str, status: &str, verbose: bool) -
     Ok(())
 }
 
-fn spawn_gemini_tmux(path: &Path, issue_id: &str, model: Option<String>, session_name: &str, verbose: bool) -> Result<()> {
+fn update_issue_status_github(cwd: &Path, issue_id: &str, status: &str, verbose: bool) -> Result<()> {
+    // GitHub Issues don't have custom statuses like beads.
+    // We use labels to track status (e.g., "status:hooked", "status:in_progress")
+    let label = format!("status:{}", status);
+
+    if verbose {
+        println!("Updating GitHub issue #{} status to '{}' via label...", issue_id, label);
+    }
+
+    // Add the status label (best effort - won't fail if label doesn't exist)
+    let output = Command::new("gh")
+        .arg("issue")
+        .arg("edit")
+        .arg(issue_id)
+        .arg("--add-label")
+        .arg(&label)
+        .current_dir(cwd)
+        .output()
+        .context("Failed to execute 'gh issue edit'")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Don't fail if label doesn't exist - status labels are optional
+        if verbose {
+            eprintln!("Warning: Could not add label '{}': {}", label, stderr.trim());
+        }
+    }
+    Ok(())
+}
+
+fn spawn_gemini_tmux(path: &Path, issue_id: &str, model: Option<String>, session_name: &str, verbose: bool, backend: IssueBackend) -> Result<()> {
     let current_exe = env::current_exe().unwrap_or_else(|_| PathBuf::from("fuzemill"));
     let done_cmd = format!("{} done", current_exe.display());
 
+    let issue_view_cmd = match backend {
+        IssueBackend::Beads => format!("bd show {}", issue_id),
+        IssueBackend::GitHub => format!("gh issue view {}", issue_id),
+    };
+
     let prompt = format!(
-        "You are working on issue {}. Please call 'bd show {}' to get the details of the issue. Your task is to fix this issue, commit the changes, push, and open a PR. When committing, please include a descriptive message and add 'Co-authored-by: Gemini <gemini@google.com>' to the commit message. When you are finished, run '{}' to close the session.",
-        issue_id, issue_id, done_cmd
+        "You are working on issue {}. Please call '{}' to get the details of the issue. Your task is to fix this issue, commit the changes, push, and open a PR. When committing, please include a descriptive message and add 'Co-authored-by: Gemini <gemini@google.com>' to the commit message. When you are finished, run '{}' to close the session.",
+        issue_id, issue_view_cmd, done_cmd
     );
 
     // Construct the command to run inside tmux
@@ -405,13 +501,18 @@ fn spawn_gemini_tmux(path: &Path, issue_id: &str, model: Option<String>, session
     Ok(())
 }
 
-fn spawn_claude_tmux(path: &Path, issue_id: &str, model: Option<String>, session_name: &str, verbose: bool) -> Result<()> {
+fn spawn_claude_tmux(path: &Path, issue_id: &str, model: Option<String>, session_name: &str, verbose: bool, backend: IssueBackend) -> Result<()> {
     let current_exe = env::current_exe().unwrap_or_else(|_| PathBuf::from("fuzemill"));
     let done_cmd = format!("{} done", current_exe.display());
 
+    let issue_view_cmd = match backend {
+        IssueBackend::Beads => format!("bd show {}", issue_id),
+        IssueBackend::GitHub => format!("gh issue view {}", issue_id),
+    };
+
     let prompt = format!(
-        "You are working on issue {}. Please call 'bd show {}' to get the details of the issue. Your task is to fix this issue, commit the changes, push, and open a PR. When committing, please include a descriptive message and add 'Co-authored-by: Claude <noreply@anthropic.com>' to the commit message. When you are finished, run '{}' to close the session.",
-        issue_id, issue_id, done_cmd
+        "You are working on issue {}. Please call '{}' to get the details of the issue. Your task is to fix this issue, commit the changes, push, and open a PR. When committing, please include a descriptive message and add 'Co-authored-by: Claude <noreply@anthropic.com>' to the commit message. When you are finished, run '{}' to close the session.",
+        issue_id, issue_view_cmd, done_cmd
     );
 
     let mut claude_cmd = String::from("claude --dangerously-skip-permissions");
@@ -454,7 +555,14 @@ fn spawn_claude_tmux(path: &Path, issue_id: &str, model: Option<String>, session
     Ok(())
 }
 
-fn create_new_bead(args: &[String], cwd: &Path) -> Result<String> {
+fn create_new_issue(args: &[String], cwd: &Path, backend: IssueBackend) -> Result<String> {
+    match backend {
+        IssueBackend::Beads => create_new_issue_beads(args, cwd),
+        IssueBackend::GitHub => create_new_issue_github(args, cwd),
+    }
+}
+
+fn create_new_issue_beads(args: &[String], cwd: &Path) -> Result<String> {
     let output = Command::new("bd")
         .arg("create")
         .args(args)
@@ -471,12 +579,79 @@ fn create_new_bead(args: &[String], cwd: &Path) -> Result<String> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let issue_id = stdout.trim().to_string();
-    
+
     if issue_id.is_empty() {
         bail!("'bd create' returned empty issue ID.");
     }
-    
+
     println!("Created issue: {}", issue_id.green());
+    Ok(issue_id)
+}
+
+fn create_new_issue_github(args: &[String], cwd: &Path) -> Result<String> {
+    if args.is_empty() {
+        bail!("Please provide a title for the issue.");
+    }
+
+    let mut gh_args = vec!["issue", "create"];
+
+    // Check if args use flags or positional
+    // If first arg starts with '-', treat as flags (compatible with gh)
+    // Otherwise, treat first arg as title
+    if !args[0].starts_with('-') {
+        gh_args.push("--title");
+        // We need to handle the title argument carefully
+    }
+
+    let output = if !args[0].starts_with('-') {
+        // Positional: first arg is title, rest is body
+        let mut cmd = Command::new("gh");
+        cmd.arg("issue")
+            .arg("create")
+            .arg("--title")
+            .arg(&args[0]);
+
+        if args.len() > 1 {
+            let body = args[1..].join(" ");
+            cmd.arg("--body").arg(&body);
+        }
+
+        cmd.current_dir(cwd)
+            .output()
+            .context("Failed to execute 'gh issue create'")?
+    } else {
+        // Flags: pass through (bd and gh use similar flags: -t for title, -b for body)
+        Command::new("gh")
+            .arg("issue")
+            .arg("create")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .context("Failed to execute 'gh issue create'")?
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("{}", stderr);
+        bail!("Failed to create GitHub issue.");
+    }
+
+    // gh issue create outputs URL like: https://github.com/owner/repo/issues/123
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let url = stdout.trim();
+
+    // Extract issue number from URL
+    let issue_id = url
+        .rsplit('/')
+        .next()
+        .context("Failed to parse issue number from gh output")?
+        .to_string();
+
+    if issue_id.is_empty() || !issue_id.chars().all(|c| c.is_ascii_digit()) {
+        bail!("Failed to extract issue number from: {}", url);
+    }
+
+    println!("Created GitHub issue: {} ({})", issue_id.green(), url);
     Ok(issue_id)
 }
 
@@ -632,7 +807,14 @@ fn find_git_root(start_path: &Path) -> Option<PathBuf> {
     }
 }
 
-fn check_bead_exists(issue_id: &str, cwd: &Path, verbose: bool) -> Result<()> {
+fn check_issue_exists(issue_id: &str, cwd: &Path, verbose: bool, backend: IssueBackend) -> Result<()> {
+    match backend {
+        IssueBackend::Beads => check_issue_exists_beads(issue_id, cwd, verbose),
+        IssueBackend::GitHub => check_issue_exists_github(issue_id, cwd, verbose),
+    }
+}
+
+fn check_issue_exists_beads(issue_id: &str, cwd: &Path, verbose: bool) -> Result<()> {
     if verbose {
         println!("Verifying issue existence for '{}'...", issue_id);
     }
@@ -649,15 +831,38 @@ fn check_bead_exists(issue_id: &str, cwd: &Path, verbose: bool) -> Result<()> {
         if stderr.contains("no beads database found") {
              bail!("No beads database found. Run 'bd init' to initialize.");
         } else {
-             // It's likely an issue not found error, or some other bd error.
-             // We can print the stderr if verbose, or just assume issue not found.
-             // Given the request, we treat it as issue not found.
              if verbose {
                  eprintln!("bd error: {}", stderr.trim());
              }
              bail!("Issue '{}' not found.", issue_id);
         }
     }
-    
+
+    Ok(())
+}
+
+fn check_issue_exists_github(issue_id: &str, cwd: &Path, verbose: bool) -> Result<()> {
+    if verbose {
+        println!("Verifying GitHub issue existence for '#{}' ...", issue_id);
+    }
+
+    let output = Command::new("gh")
+        .arg("issue")
+        .arg("view")
+        .arg(issue_id)
+        .arg("--json")
+        .arg("number,state")
+        .current_dir(cwd)
+        .output()
+        .context("Failed to execute 'gh issue view'. Is gh CLI installed and authenticated?")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if verbose {
+            eprintln!("gh error: {}", stderr.trim());
+        }
+        bail!("GitHub issue '{}' not found.", issue_id);
+    }
+
     Ok(())
 }
