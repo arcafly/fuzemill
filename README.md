@@ -3,7 +3,7 @@
 ## tldr
 
 ```bash
-fuzemill start "Fix the login bug" --agent claude --model opus
+fuzemill start --agent claude "Fix the login bug" --agent claude
 ```
 
 The above creates issue (example: ISSUE-123), worktree, branch, and tmux session with claude/gemini yolo mode, instructed to implement prompt and push PR.
