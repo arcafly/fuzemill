@@ -1,5 +1,22 @@
 # Fuzemill
 
+## tldr
+
+```bash
+fuzemill start "Fix the login bug" --agent claude --model opus
+```
+
+The above creates issue (example: ISSUE-123), worktree, branch, and tmux session with claude/gemini yolo mode, instructed to implement prompt and push PR.
+
+Then, when done, on main worktree enter:
+
+```bash
+fuzemill merge ISSUE-123
+```
+
+
+---
+
 A Git workflow automation CLI that orchestrates issue-driven development sessions with AI coding assistants. Fuzemill manages Git worktrees, issue tracking, and AI sessions in tmux to create isolated, focused development environments.
 
 ## Features
