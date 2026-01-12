@@ -2,6 +2,7 @@
 name = "fuzemill"
 version = "0.1.0"
 edition = "2024"
+authors = ["Juan Bernardo Tobar <jbtobar.io@gmail.com>"]
 description = "A Git workflow automation CLI for issue-driven development with AI agents."
 license = "MIT"
 repository = "https://github.com/arcafly/fuzemill"
