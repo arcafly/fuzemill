@@ -1,30 +1,49 @@
 # Fuzemill
 
-A production-grade Rust CLI tool that detects if the current working directory is inside a Git repository.
+A Git workflow automation CLI that orchestrates issue-driven development sessions with AI coding assistants. Fuzemill manages Git worktrees, issue tracking, and AI sessions in tmux to create isolated, focused development environments.
 
 ## Features
 
-- 🚀 Fast and lightweight directory traversal.
-- 🎨 Color-coded output for better visibility.
-- 🛠️ Simple and robust error handling.
+- Creates isolated Git worktrees per issue for clean development
+- Integrates with Beads (`bd`) for Git-backed issue tracking
+- Launches AI coding sessions (Claude or Gemini) in tmux
+- Handles PR merging and cleanup via GitHub CLI
+- Automatic worktree cleanup on session exit
+
+## Prerequisites
+
+The following tools must be installed and available in your PATH:
+
+| Tool | Required | Purpose |
+|------|----------|---------|
+| `git` | Yes | Version control with worktree support |
+| `tmux` | Yes | Terminal multiplexer for AI sessions |
+| `bd` (Beads CLI) | Yes | Git-backed issue tracking |
+| `gh` (GitHub CLI) | Yes | PR operations (merge, delete branch) |
+| `claude` | For Claude agent | Claude Code CLI |
+| `gemini` | For Gemini agent | Gemini CLI |
+| `direnv` | Optional | Auto-runs `direnv allow` if `.envrc` exists |
+
+### Installing Dependencies
+
+```bash
+# macOS (Homebrew)
+brew install git tmux gh direnv
+
+# Install Beads (bd) - see beads documentation
+# Install Claude Code - see https://claude.ai/code
+# Install Gemini CLI - see Google's documentation
+```
 
 ## Installation
-
-Ensure you have Rust and Cargo installed. Then, clone the repository and build the project:
 
 ```bash
 git clone https://github.com/arcafly/fuzemill.git
 cd fuzemill
-cargo build --release
-```
-
-To install it locally:
-
-```bash
 cargo install --path .
 ```
 
-To uninstall it:
+To uninstall:
 
 ```bash
 cargo uninstall fuzemill
@@ -32,59 +51,111 @@ cargo uninstall fuzemill
 
 ## Usage
 
-Run the tool from any directory:
+### Start Working on an Issue
+
+Create a worktree and launch an AI session for an existing issue:
+
+```bash
+fuzemill start --id ISSUE-123
+```
+
+Or create a new issue and start working on it:
+
+```bash
+fuzemill start "Fix the login bug" --priority high
+```
+
+Options:
+- `--id <ID>`: Use an existing issue ID
+- `--agent <claude|gemini>`: Choose AI agent (default: claude)
+- `--model <MODEL>`: Specify the AI model to use
+- `-v, --verbose`: Enable verbose output
+
+The command will:
+1. Create a Git worktree at `../<repo-name>-<issue-id>/`
+2. Create a new branch named `<issue-id>`
+3. Run `direnv allow` if `.envrc` exists
+4. Launch the AI agent in a tmux session
+5. Clean up the worktree when the session ends
+
+### Stop Working on an Issue
+
+Remove the worktree and branch without merging:
+
+```bash
+fuzemill unstart ISSUE-123
+```
+
+If run from within the worktree being removed, fuzemill will move you to the main repository.
+
+### Merge a Completed PR
+
+Merge the PR, delete the branch, and close the issue:
+
+```bash
+fuzemill merge ISSUE-123
+```
+
+This command must be run from the main repository (not a worktree). It will:
+1. Remove the worktree (if it exists)
+2. Run `gh pr merge --merge --delete-branch`
+3. Pull the latest changes to main
+4. Close the issue via `bd close`
+
+### End an AI Session
+
+From within a fuzemill tmux session:
+
+```bash
+fuzemill done
+```
+
+This kills the current tmux session and triggers worktree cleanup.
+
+### Check Repository Status
+
+Running fuzemill without arguments shows the current repository name:
 
 ```bash
 fuzemill
+# Output: myproject (in green if in a git repo)
 ```
 
-### Options
-
-- `-v`, `--verbose`: Enable verbose output to see the scanning path and exact root location.
-- `-h`, `--help`: Print help information.
-- `-V`, `--version`: Print version information.
-
-### Examples
-
-**Inside a Git repository:**
+## Workflow Example
 
 ```bash
-$ fuzemill
-fuzemill
+# 1. Initialize beads in your project (one-time setup)
+bd init
+
+# 2. Create an issue and start working
+fuzemill start "Add user authentication" --priority high
+
+# 3. AI session opens in tmux - work with the AI to implement the feature
+#    The AI will commit, push, and open a PR
+
+# 4. When done, the AI runs 'fuzemill done' to close the session
+
+# 5. Review the PR on GitHub, then merge when ready
+fuzemill merge AUTH-001
+
+# 6. Done! Main branch is updated and issue is closed
 ```
 
-**Outside a Git repository:**
+## Project Structure
 
-```bash
-$ cd /tmp
-$ fuzemill
-Not in a git repository
+Fuzemill creates worktrees as siblings to your main repository:
+
+```
+~/projects/
+  myproject/           # Main repository
+  myproject-ISSUE-1/   # Worktree for ISSUE-1
+  myproject-ISSUE-2/   # Worktree for ISSUE-2
 ```
 
 ## Development
 
-Run the project in development mode within the project root:
-
 ```bash
-cargo run
-```
-
-### Testing in other directories
-
-To test the CLI in a different directory without installing it, build the project and call the binary using its absolute path:
-
-1. Build the binary:
-   ```bash
-   cargo build
-   ```
-2. Navigate to any other directory and run the binary:
-   ```bash
-   cd /some/other/repo
-   /Users/jbtobar/dev/@arcafly/fuzemill/target/debug/fuzemill
-   ```
-
-Alternatively, you can install it globally for the current user:
-
-```bash
-cargo install --path .
+cargo build           # Debug build
+cargo build --release # Release build
+cargo run             # Run in development mode
 ```
