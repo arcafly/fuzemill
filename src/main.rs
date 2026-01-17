@@ -3,28 +3,12 @@ use clap::{Parser, Subcommand};
 use colored::*;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum IssueBackend {
     Beads,
     GitHub,
-}
-
-fn detect_issue_backend() -> IssueBackend {
-    let bd_available = Command::new("bd")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if bd_available {
-        IssueBackend::Beads
-    } else {
-        IssueBackend::GitHub
-    }
 }
 
 #[derive(Parser)]
@@ -37,12 +21,16 @@ struct Cli {
     /// Verbose output
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Use beads (bd) for issue tracking instead of GitHub Issues
+    #[arg(long, global = true)]
+    use_bd: bool,
 }
 
 #[derive(Subcommand)]
 enum Commands {
     /// Start working on an issue (creates worktree and branch).
-    /// If no ID is provided, passes arguments to 'bd create' to generate a new issue.
+    /// If no ID is provided, passes arguments to create a new GitHub issue (or bead with --use-bd).
     Start {
         /// The issue ID (used for branch name)
         #[arg(short, long)]
@@ -56,7 +44,7 @@ enum Commands {
         #[arg(short, long, default_value = "claude")]
         agent: String,
 
-        /// Arguments to pass to 'bd create' if no ID is provided
+        /// Arguments to create a new issue if no ID is provided
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         create_args: Vec<String>,
     },
@@ -80,7 +68,13 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let backend = detect_issue_backend();
+
+    // Use beads only if --use-bd flag is passed, otherwise default to GitHub
+    let backend = if cli.use_bd {
+        IssueBackend::Beads
+    } else {
+        IssueBackend::GitHub
+    };
 
     if cli.verbose {
         match backend {
